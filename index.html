@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>B3A 富泰邨 → 深圳灣口岸 (next bus)</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --card: #171b23;
+    --card-2: #1f242e;
+    --line: #2b323f;
+    --text: #e8edf5;
+    --muted: #8b95a7;
+    --accent: #ffd23f;
+    --ok: #3ddc84;
+    --err: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(120% 120% at 50% 0%, #1a2130 0%, var(--bg) 60%);
+    color: var(--text);
+    font-family: "Segoe UI", "PingFang TC", "Microsoft JhengHei", system-ui, -apple-system, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    width: min(560px, 100%);
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    padding: 22px 22px 16px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, .45);
+  }
+  header { display: flex; align-items: center; gap: 14px; }
+  .route {
+    flex: none;
+    background: var(--accent);
+    color: #14171d;
+    font-weight: 800;
+    font-size: 22px;
+    letter-spacing: .5px;
+    padding: 8px 12px;
+    border-radius: 10px;
+  }
+  h1 { margin: 0; font-size: 19px; font-weight: 700; }
+  header p { margin: 3px 0 0; font-size: 13px; color: var(--muted); }
+  .arrow { color: var(--accent); }
+
+  main { margin: 20px 0 6px; display: grid; gap: 10px; }
+  .eta {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    background: var(--card-2);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px 18px;
+  }
+  .eta .min {
+    font-variant-numeric: tabular-nums;
+    font-size: 40px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .eta .min small { font-size: 16px; font-weight: 600; color: var(--muted); margin-left: 4px; }
+  .eta .min.due { font-size: 26px; color: var(--ok); }
+  .eta .right { text-align: right; font-size: 13px; color: var(--muted); }
+  .eta .right b { display: block; font-size: 15px; color: var(--text); font-weight: 600; }
+  .eta .rmk {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    padding: 1px 7px;
+  }
+  .eta:nth-child(1) .min { color: var(--accent); }
+
+  .empty {
+    text-align: center;
+    padding: 26px 10px;
+    color: var(--muted);
+    background: var(--card-2);
+    border: 1px dashed var(--line);
+    border-radius: 14px;
+  }
+  .empty strong { display: block; color: var(--text); font-size: 15px; margin-bottom: 4px; }
+  .empty.error strong { color: var(--err); }
+
+  footer {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  footer .dot { color: var(--ok); }
+  button {
+    font: inherit;
+    color: var(--text);
+    background: var(--card-2);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="card">
+  <header>
+    <span class="route">B3A</span>
+    <div>
+      <h1>富泰邨 <span class="arrow">&rarr;</span> 深圳灣口岸</h1>
+      <p>Fu Tai Estate, Castle Peak Road &nbsp;<span class="arrow">&rarr;</span>&nbsp; Shenzhen Bay Port</p>
+    </div>
+  </header>
+
+  <main id="board" aria-live="polite"></main>
+
+  <footer>
+    <span id="status"><span class="dot">&#9679;</span> Live · Citybus open data (DATA.GOV.HK)</span>
+    <span id="updated">—</span>
+    <button id="refresh" type="button">Refresh</button>
+  </footer>
+</div>
+
+<script>
+  "use strict";
+
+  // --- Route / stop configuration -------------------------------------------
+  // B3A outbound (dir "O"): Shan King Estate -> Shenzhen Bay Port
+  // Stop 003261 = Fu Tai Estate, Castle Peak Road (sequence 14, next stop is Shenzhen Bay Port).
+  const CO = "CTB";
+  const ROUTE = "B3A";
+  const STOP = "003261";
+  const DEST_EN = "Shenzhen Bay Port";
+  const ETA_URL = "https://rt.data.gov.hk/v2/transport/citybus/eta/" + CO + "/" + STOP + "/" + ROUTE;
+  const REFRESH_MS = 30000;   // refresh every 30 seconds
+  const MAX_ROWS = 3;
+
+  const board = document.getElementById("board");
+  const statusEl = document.getElementById("status");
+  const updatedEl = document.getElementById("updated");
+
+  let etas = [];              // last successful response
+  let lastError = null;
+  let nextRefreshAt = 0;
+
+  const clock = (iso) =>
+    new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+  // Whole minutes until the ETA, floored (an ETA in 90s reads "1 min").
+  const minutesUntil = (iso) => Math.floor((new Date(iso).getTime() - Date.now()) / 60000);
+
+  function row(eta) {
+    const el = document.createElement("div");
+    el.className = "eta";
+
+    const left = document.createElement("div");
+    left.className = "min";
+
+    if (!eta.eta) {
+      left.classList.add("due");
+      left.textContent = "—";
+    } else {
+      const m = minutesUntil(eta.eta);
+      if (m <= 0) {
+        left.classList.add("due");
+        left.textContent = "Due 即將到站";
+      } else {
+        left.innerHTML = m + "<small>min</small>";
+      }
+    }
+    el.appendChild(left);
+
+    const right = document.createElement("div");
+    right.className = "right";
+    right.innerHTML =
+      "<b>" + (eta.eta ? clock(eta.eta) : "no time") + "</b>" +
+      "to " + (eta.dest_en || DEST_EN);
+    const rmk = eta.rmk_en || eta.rmk_tc || "";
+    if (rmk) {
+      const badge = document.createElement("span");
+      badge.className = "rmk";
+      badge.textContent = rmk;
+      right.appendChild(badge);
+    }
+    el.appendChild(right);
+
+    return el;
+  }
+
+  function render() {
+    board.textContent = "";
+
+    if (lastError) {
+      const box = document.createElement("div");
+      box.className = "empty error";
+      box.innerHTML = "<strong>Could not load ETA</strong>" + lastError;
+      board.appendChild(box);
+    } else if (!etas.length) {
+      const box = document.createElement("div");
+      box.className = "empty";
+      box.innerHTML =
+        "<strong>沒有班次暫停服務 / No upcoming buses</strong>" +
+        "No B3A departures towards Shenzhen Bay Port are being reported right now.";
+      board.appendChild(box);
+    } else {
+      etas.slice(0, MAX_ROWS).forEach((e) => board.appendChild(row(e)));
+    }
+
+    const secs = Math.max(0, Math.round((nextRefreshAt - Date.now()) / 1000));
+    updatedEl.textContent = "updated " + clock(new Date().toISOString()) + " · next in " + secs + "s";
+  }
+
+  async function load() {
+    nextRefreshAt = Date.now() + REFRESH_MS;
+    try {
+      const res = await fetch(ETA_URL, { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const json = await res.json();
+      const data = Array.isArray(json.data) ? json.data : [];
+
+      etas = data
+        .filter((e) => (e.dir || "O") === "O")                       // outbound only
+        .filter((e) => !e.dest_en || e.dest_en === DEST_EN)          // towards the Port
+        .filter((e) => e.eta)                                        // drop empty rows
+        .sort((a, b) => new Date(a.eta) - new Date(b.eta));
+
+      lastError = null;
+      statusEl.innerHTML = '<span class="dot">&#9679;</span> Live · Citybus open data (DATA.GOV.HK)';
+    } catch (err) {
+      lastError = String(err && err.message ? err.message : err);
+      statusEl.innerHTML = '<span style="color:var(--err)">&#9679;</span> Offline · Citybus open data (DATA.GOV.HK)';
+      if (!etas.length) board.textContent = "";
+    }
+    render();
+  }
+
+  document.getElementById("refresh").addEventListener("click", load);
+
+  render();
+  load();
+  setInterval(load, REFRESH_MS);   // refresh every 30 seconds
+  setInterval(render, 1000);       // keep the minute countdown ticking
+</script>
+</body>
+</html>
